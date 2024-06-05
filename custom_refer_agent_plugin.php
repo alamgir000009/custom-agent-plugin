@@ -152,7 +152,7 @@ function custom_agent_save_extra_profile_fields($user_id)
             $message = "Hi,\n\nThe agent account for {$user_info->first_name} {$user_info->last_name} has been rejected.\n\nThank you.";
             wp_mail($created_by_email, $subject, $message);
         }
-    } 
+    }
 }
 
 add_action('personal_options_update', 'custom_agent_save_extra_profile_fields');
@@ -404,5 +404,51 @@ function custom_agent_display_referred_agents_table()
     }
     echo '</tbody></table></div></div></div></div>';
 }
+
+// Add custom columns to users list
+function custom_agent_add_custom_user_columns($columns)
+{
+    $columns['full_name'] = __('Full Name');
+    $columns['phone'] = __('Phone');
+    $columns['brokerage'] = __('Brokerage');
+    $columns['website'] = __('Website');
+    $columns['city'] = __('City');
+    $columns['dob'] = __('Date of Birth');
+    $columns['gender'] = __('Gender');
+    $columns['designation'] = __('Designation');
+    $columns['agent_resume'] = __('Resume');
+    return $columns;
+}
+add_filter('manage_users_columns', 'custom_agent_add_custom_user_columns');
+
+// Populate custom columns with data
+function custom_agent_show_custom_user_columns_data($value, $column_name, $user_id)
+{
+    switch ($column_name) {
+        case 'full_name':
+            return get_user_meta($user_id, 'full_name', true);
+        case 'phone':
+            return get_user_meta($user_id, 'phone', true);
+        case 'brokerage':
+            return get_user_meta($user_id, 'brokerage', true);
+        case 'website':
+            return get_user_meta($user_id, 'website', true);
+        case 'city':
+            return get_user_meta($user_id, 'city', true);
+        case 'dob':
+            return get_user_meta($user_id, 'dob', true);
+        case 'gender':
+            return get_user_meta($user_id, 'gender', true);
+        case 'designation':
+            return get_user_meta($user_id, 'designation', true);
+        case 'agent_resume':
+            $resume_url = get_user_meta($user_id, 'agent_resume', true);
+            return $resume_url ? '<a href="' . esc_url($resume_url) . '" target="_blank">View Resume</a>' : '';
+
+        default:
+            return $value;
+    }
+}
+add_action('manage_users_custom_column', 'custom_agent_show_custom_user_columns_data', 10, 3);
 
 ?>
