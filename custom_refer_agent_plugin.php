@@ -314,7 +314,37 @@ function custom_agent_handle_form_submission()
             if ($agent_resume) {
                 add_user_meta($user_id, 'agent_resume', $agent_resume);
             }
-            $_SESSION['agent_form_msg'] = '<div class="alert alert-success"><p>Agent added successfully.</p></div>';
+
+            $agent_post = array(
+                'post_title' => $full_name,
+                'post_content' => '',
+                'post_status' => 'publish',
+                'post_author' => $current_user->ID,
+                'post_type' => 'agent'
+            );
+
+            $post_id = wp_insert_post($agent_post);
+
+            if ($post_id) {
+                update_post_meta($post_id, 'user_id', $user_id);
+                update_post_meta($post_id, 'full_name', $full_name);
+                update_post_meta($post_id, 'phone', $phone);
+                update_post_meta($post_id, 'brokerage', $brokerage);
+                update_post_meta($post_id, 'website', $website);
+                update_post_meta($post_id, 'city', $city);
+                update_post_meta($post_id, 'dob', $dob);
+                update_post_meta($post_id, 'gender', $gender);
+                update_post_meta($post_id, 'designation', $designation);
+                if ($profile_picture) {
+                    update_post_meta($post_id, 'profile_picture', $profile_picture);
+                }
+                if ($agent_resume) {
+                    update_post_meta($post_id, 'agent_resume', $agent_resume);
+                }
+                $_SESSION['agent_form_msg'] = '<div class="alert alert-success"><p>Agent added successfully.</p></div>';
+            } else {
+                $_SESSION['agent_form_msg'] = '<div class="alert alert-danger"><p>Error creating agent post.</p></div>';
+            }
         } else {
             $_SESSION['agent_form_msg'] = '<div class="alert alert-danger"><p>Error: ' . $user_id->get_error_message() . '</p></div>';
         }
@@ -323,6 +353,7 @@ function custom_agent_handle_form_submission()
         exit;
     }
 }
+
 
 // Handle file uploads
 function custom_agent_handle_file_upload($file_key)
@@ -421,6 +452,171 @@ function custom_agent_add_custom_user_columns($columns)
 }
 add_filter('manage_users_columns', 'custom_agent_add_custom_user_columns');
 
+// Add custom columns to the "agent" post type
+function custom_agent_add_custom_columns($columns)
+{
+    $columns['full_name'] = 'Full Name';
+    $columns['phone'] = 'Phone';
+    $columns['brokerage'] = 'Brokerage';
+    $columns['website'] = 'Website';
+    $columns['city'] = 'City';
+    $columns['dob'] = 'DOB';
+    $columns['gender'] = 'Gender';
+    $columns['designation'] = 'Designation';
+    $columns['agent_resume'] = 'Agent Resume';
+    $columns['user_profile'] = 'View User Profile';
+    $columns['agent_status'] = 'Agent Status';
+    return $columns;
+}
+add_filter('manage_agent_posts_columns', 'custom_agent_add_custom_columns');
+
+// Populate custom columns with data
+function custom_agent_show_custom_columns_data($column, $post_id)
+{
+
+    switch ($column) {
+        case 'full_name':
+            echo esc_html(get_post_meta($post_id, 'full_name', true));
+            break;
+        case 'phone':
+            echo esc_html(get_post_meta($post_id, 'phone', true));
+            break;
+        case 'brokerage':
+            echo esc_html(get_post_meta($post_id, 'brokerage', true));
+            break;
+        case 'website':
+            $website = get_post_meta($post_id, 'website', true);
+            echo $website ? '<a href="' . esc_url($website) . '" target="_blank">' . esc_html($website) . '</a>' : '';
+            break;
+        case 'city':
+            echo esc_html(get_post_meta($post_id, 'city', true));
+            break;
+        case 'dob':
+            echo esc_html(get_post_meta($post_id, 'dob', true));
+            break;
+        case 'gender':
+            echo esc_html(get_post_meta($post_id, 'gender', true));
+            break;
+        case 'designation':
+            echo esc_html(get_post_meta($post_id, 'designation', true));
+            break;
+        case 'agent_resume':
+            $resume_url = get_post_meta($post_id, 'agent_resume', true);
+            echo $resume_url ? '<a href="' . esc_url($resume_url) . '" target="_blank">View Resume</a>' : '';
+            break;
+        case 'user_profile':
+            $user_id = get_post_meta($post_id, 'user_id', true);
+            if ($user_id) {
+                $user_info = get_userdata($user_id);
+                if ($user_info) {
+                    echo '<a href="' . esc_url(get_edit_user_link($user_id)) . '" target="_blank">' . esc_html($user_info->display_name) . '</a>';
+                } else {
+                    echo 'No user found';
+                }
+            } else {
+                echo 'No user ID';
+            }
+            break;
+        case 'agent_status':
+            $current_status = get_post_meta($post_id, 'agent_status', true);
+            ?>
+            <form method="post" action="<?php echo admin_url('admin-post.php'); ?>">
+                <input type="hidden" name="action" value="update_agent_status">
+                <input type="hidden" name="post_id" value="<?php echo esc_attr($post_id); ?>">
+                <input type="hidden" name="nonce" value="<?php echo wp_create_nonce('custom_agent_nonce'); ?>">
+                <select name="new_status">
+                    <option value="pending" <?php selected($current_status, 'pending'); ?>>Pending</option>
+                    <option value="approved" <?php selected($current_status, 'approved'); ?>>Approved</option>
+                    <option value="rejected" <?php selected($current_status, 'rejected'); ?>>Rejected</option>
+                </select>
+                <button type="submit">Update</button>
+            </form>
+            <?php
+            break;
+    }
+}
+add_action('manage_agent_posts_custom_column', 'custom_agent_show_custom_columns_data', 10, 2);
+
+function handle_update_agent_status()
+{
+    check_admin_referer('custom_agent_nonce', 'nonce');
+
+    if (!current_user_can('edit_post', $_POST['post_id'])) {
+        wp_die('You do not have permission to edit this post.');
+    }
+
+    $post_id = intval($_POST['post_id']);
+    $new_status = sanitize_text_field($_POST['new_status']);
+
+    update_post_meta($post_id, 'agent_status', $new_status);
+
+    if ($new_status == 'approved') {
+        // Create a new user from post details
+        $user_id = create_user_from_post($post_id);
+
+        if ($user_id) {
+            // Send reset password email to the new user
+            send_reset_password_email($user_id);
+        }
+    }
+
+    wp_redirect(add_query_arg('updated', 'true', wp_get_referer()));
+    exit;
+}
+add_action('admin_post_update_agent_status', 'handle_update_agent_status');
+
+
+function create_user_from_post($post_id)
+{
+    $user_data = array(
+        'user_login' => get_post_meta($post_id, 'full_name', true),
+        'user_email' => get_post_meta($post_id, 'email', true),
+        'user_pass' => wp_generate_password(), // Generate a random password
+        'role' => 'subscriber' // You can change the role if needed
+    );
+
+    $user_id = wp_insert_user($user_data);
+
+    if (is_wp_error($user_id)) {
+        return false;
+    }
+
+    // Copy additional meta data
+    update_user_meta($user_id, 'phone', get_post_meta($post_id, 'phone', true));
+    update_user_meta($user_id, 'brokerage', get_post_meta($post_id, 'brokerage', true));
+    update_user_meta($user_id, 'website', get_post_meta($post_id, 'website', true));
+    update_user_meta($user_id, 'city', get_post_meta($post_id, 'city', true));
+    update_user_meta($user_id, 'dob', get_post_meta($post_id, 'dob', true));
+    update_user_meta($user_id, 'gender', get_post_meta($post_id, 'gender', true));
+    update_user_meta($user_id, 'designation', get_post_meta($post_id, 'designation', true));
+
+    return $user_id;
+}
+
+function send_reset_password_email($user_id)
+{
+    $user = get_userdata($user_id);
+    $reset_key = get_password_reset_key($user);
+
+    if (is_wp_error($reset_key)) {
+        return false;
+    }
+
+    $reset_url = network_site_url("wp-login.php?action=rp&key=$reset_key&login=" . rawurlencode($user->user_login), 'login');
+
+    $message = __('Someone has requested a password reset for the following account:') . "\r\n\r\n";
+    $message .= network_site_url() . "\r\n\r\n";
+    $message .= sprintf(__('Username: %s'), $user->user_login) . "\r\n\r\n";
+    $message .= __('If this was a mistake, just ignore this email and nothing will happen.') . "\r\n\r\n";
+    $message .= __('To reset your password, visit the following address:') . "\r\n\r\n";
+    $message .= '<a href="' . esc_url($reset_url) . '">' . esc_url($reset_url) . '</a>' . "\r\n";
+
+    wp_mail($user->user_email, __('Password Reset'), $message);
+}
+
+
+
+
 // Populate custom columns with data
 function custom_agent_show_custom_user_columns_data($value, $column_name, $user_id)
 {
@@ -450,5 +646,47 @@ function custom_agent_show_custom_user_columns_data($value, $column_name, $user_
     }
 }
 add_action('manage_users_custom_column', 'custom_agent_show_custom_user_columns_data', 10, 3);
+function custom_agent_post_type()
+{
+    $labels = array(
+        'name' => _x('Agents', 'post type general name', 'your-plugin-textdomain'),
+        'singular_name' => _x('Agent', 'post type singular name', 'your-plugin-textdomain'),
+        'menu_name' => _x('Agents', 'admin menu', 'your-plugin-textdomain'),
+        'name_admin_bar' => _x('Agent', 'add new on admin bar', 'your-plugin-textdomain'),
+        'add_new' => _x('Add New', 'agent', 'your-plugin-textdomain'),
+        'add_new_item' => __('Add New Agent', 'your-plugin-textdomain'),
+        'new_item' => __('New Agent', 'your-plugin-textdomain'),
+        'edit_item' => __('Edit Agent', 'your-plugin-textdomain'),
+        'view_item' => __('View Agent', 'your-plugin-textdomain'),
+        'all_items' => __('All Agents', 'your-plugin-textdomain'),
+        'search_items' => __('Search Agents', 'your-plugin-textdomain'),
+        'parent_item_colon' => __('Parent Agents:', 'your-plugin-textdomain'),
+        'not_found' => __('No agents found.', 'your-plugin-textdomain'),
+        'not_found_in_trash' => __('No agents found in Trash.', 'your-plugin-textdomain')
+    );
+
+    $args = array(
+        'labels' => $labels,
+        'public' => true,
+        'publicly_queryable' => true,
+        'show_ui' => true,
+        'show_in_menu' => true,
+        'show_in_admin_bar' => false,
+        'query_var' => true,
+        'rewrite' => array('slug' => 'agent'),
+        'capability_type' => 'post',
+        'capabilities' => array(
+            'create_posts' => false,
+        ),
+        'map_meta_cap' => true,
+        'has_archive' => true,
+        'hierarchical' => false,
+        'menu_position' => null,
+        'supports' => array('title', 'editor', 'author', 'thumbnail', 'excerpt', 'comments')
+    );
+
+    register_post_type('agent', $args);
+}
+add_action('init', 'custom_agent_post_type');
 
 ?>
