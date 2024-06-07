@@ -123,8 +123,6 @@ function custom_agent_save_extra_profile_fields($user_id)
         return false;
     }
 
-    wp_mail("alamgir@yopmail.com", "TESt", "MEssage");
-
     $new_status = sanitize_text_field($_POST['agent_status']);
     $old_status = get_user_meta($user_id, 'agent_status', true);
 
@@ -158,6 +156,15 @@ function custom_agent_save_extra_profile_fields($user_id)
 add_action('personal_options_update', 'custom_agent_save_extra_profile_fields');
 add_action('edit_user_profile_update', 'custom_agent_save_extra_profile_fields');
 
+function custom_agent_start_session()
+{
+    if (!session_id()) {
+        session_start();
+    }
+}
+add_action('init', 'custom_agent_start_session', 1);
+
+
 
 // Shortcode for the form
 add_shortcode('custom_agent_form', 'custom_agent_form_shortcode');
@@ -171,11 +178,12 @@ function custom_agent_form_shortcode()
             <div class="card shadow-lg px-md-3">
                 <div class="card-header bg-white">
                     <h2>Refer Agent</h2>
-                    <?php if (!empty($_SESSION['agent_form_msg'])) { ?>
-                        <?php echo $_SESSION['agent_form_msg'];
-                        $_SESSION['agent_form_msg'] = '';
-                        ?>
-                    <?php } ?>
+                    <?php
+                    if (isset($_SESSION['agent_form_msg'])) {
+                        echo $_SESSION['agent_form_msg'];
+                        unset($_SESSION['agent_form_msg']);
+                    }
+                    ?>
                 </div>
                 <div class="card-body">
                     <div class="row">
@@ -257,29 +265,24 @@ function custom_agent_form_shortcode()
     return ob_get_clean();
 }
 
-// Shortcode for the table
-add_shortcode('custom_agent_table', 'custom_agent_table_shortcode');
-
-function custom_agent_table_shortcode()
-{
-    ob_start();
-    custom_agent_display_referred_agents_table();
-    return ob_get_clean();
-}
-
 // Handle form submission
 add_action('init', 'custom_agent_handle_form_submission');
 
 function custom_agent_handle_form_submission()
 {
     if (isset($_POST['custom_agent_form']) && $_POST['custom_agent_form'] == '1') {
+        // Check nonce
         if (!isset($_POST['custom_agent_form_nonce']) || !wp_verify_nonce($_POST['custom_agent_form_nonce'], 'custom_agent_form_action')) {
-            return;
+            $_SESSION['agent_form_msg'] = '<div class="alert alert-danger"><p>Nonce verification failed. Please try again.</p></div>';
+            wp_redirect($_SERVER['REQUEST_URI']);
+            exit;
         }
 
+        // Sanitize and validate input fields
+        $errors = [];
         $user_login = sanitize_text_field($_POST['user_login']);
-        $user_email = sanitize_email($_POST['user_email']);
         $full_name = sanitize_text_field($_POST['full_name']);
+        $user_email = sanitize_email($_POST['user_email']);
         $phone = sanitize_text_field($_POST['phone']);
         $brokerage = sanitize_text_field($_POST['brokerage']);
         $website = esc_url($_POST['website']);
@@ -288,70 +291,125 @@ function custom_agent_handle_form_submission()
         $gender = sanitize_text_field($_POST['gender']);
         $designation = sanitize_text_field($_POST['designation']);
         $current_user = wp_get_current_user();
+        $current_user_name = $current_user->display_name;
 
+        // Required fields
+        if (empty($user_login)) {
+            $errors[] = 'Username is required.';
+        }
+        if (empty($full_name)) {
+            $errors[] = 'Full name is required.';
+        }
+        if (empty($user_email) || !is_email($user_email)) {
+            $errors[] = 'A valid email is required.';
+        } elseif (email_exists($user_email) || custom_agent_email_exists_in_post_meta($user_email)) {
+            $errors[] = 'This email is already in use.';
+        }
+        if (empty($gender)) {
+            $errors[] = 'Gender is required.';
+        }
+
+        // File uploads
         $profile_picture = custom_agent_handle_file_upload('profile_picture');
         $agent_resume = custom_agent_handle_file_upload('agent_resume');
 
-        $user_password = $user_login;
+        if (empty($profile_picture)) {
+            $errors[] = 'Profile picture is required.';
+        }
+        if (empty($agent_resume)) {
+            $errors[] = 'Agent Resume is required.';
+        }
 
-        $user_id = wp_create_user($user_login, $user_password, $user_email);
+        if (is_wp_error($profile_picture)) {
+            $errors[] = 'Profile picture upload failed: ' . $profile_picture->get_error_message();
+        }
 
-        if (!is_wp_error($user_id)) {
-            wp_update_user(array('ID' => $user_id, 'role' => 'agent'));
-            add_user_meta($user_id, 'referred_by', $current_user->ID);
-            add_user_meta($user_id, 'agent_status', 'pending');
-            add_user_meta($user_id, 'full_name', $full_name);
-            add_user_meta($user_id, 'phone', $phone);
-            add_user_meta($user_id, 'brokerage', $brokerage);
-            add_user_meta($user_id, 'website', $website);
-            add_user_meta($user_id, 'city', $city);
-            add_user_meta($user_id, 'dob', $dob);
-            add_user_meta($user_id, 'gender', $gender);
-            add_user_meta($user_id, 'designation', $designation);
+        if (is_wp_error($agent_resume)) {
+            $errors[] = 'Agent resume upload failed: ' . $agent_resume->get_error_message();
+        }
+
+        // Check if there are errors
+        if (!empty($errors)) {
+            $_SESSION['agent_form_msg'] = '<div class="alert alert-danger"><p>' . implode('<br>', $errors) . '</p></div>';
+            wp_redirect($_SERVER['REQUEST_URI']);
+            exit;
+        }
+
+        // Create agent post
+        $agent_post = array(
+            'post_title' => $full_name,
+            'post_content' => '',
+            'post_status' => 'pending',
+            'post_author' => $current_user->ID,
+            'post_type' => 'agent'
+        );
+
+        $post_id = wp_insert_post($agent_post);
+
+        if ($post_id) {
+            update_post_meta($post_id, 'user_login', $user_login);
+            update_post_meta($post_id, 'full_name', $full_name);
+            update_post_meta($post_id, 'user_email', $user_email);
+            update_post_meta($post_id, 'created_by', $current_user->ID);
+            update_post_meta($post_id, 'agent_status', 'pending');
+            update_post_meta($post_id, 'phone', $phone);
+            update_post_meta($post_id, 'brokerage', $brokerage);
+            update_post_meta($post_id, 'website', $website);
+            update_post_meta($post_id, 'city', $city);
+            update_post_meta($post_id, 'dob', $dob);
+            update_post_meta($post_id, 'gender', $gender);
+            update_post_meta($post_id, 'designation', $designation);
             if ($profile_picture) {
-                add_user_meta($user_id, 'profile_picture', $profile_picture);
+                update_post_meta($post_id, 'profile_picture', $profile_picture);
             }
             if ($agent_resume) {
-                add_user_meta($user_id, 'agent_resume', $agent_resume);
+                update_post_meta($post_id, 'agent_resume', $agent_resume);
             }
 
-            $agent_post = array(
-                'post_title' => $full_name,
-                'post_content' => '',
-                'post_status' => 'publish',
-                'post_author' => $current_user->ID,
-                'post_type' => 'agent'
-            );
+            $admin_email = get_option('admin_email');
+            $post_url = admin_url('edit.php?post_type=agent');
 
-            $post_id = wp_insert_post($agent_post);
+            $subject = __('New Agent Referred');
+            $message = '<html><body>';
+            $message .= '<p>' . __('Hello Admin,') . '</p>';
+            $message .= '<p>' . __('A new agent has been referred and is pending your approval.') . '</p>';
+            $message .= '<p>' . __('Agent Name: ') . esc_html($full_name) . '</p>';
+            $message .= '<p>' . __('Referred By: ') . esc_html($current_user_name) . '</p>';
+            $message .= '<p>' . __('You can view and approve the agent by clicking the button below:') . '</p>';
+            $message .= '<p><a href="' . esc_url($post_url) . '" style="display: inline-block; padding: 10px 20px; font-size: 16px; color: #ffffff; background-color: #0073aa; text-decoration: none; border-radius: 5px;">' . __('View Agent') . '</a></p>';
+            $message .= '</body></html>';
 
-            if ($post_id) {
-                update_post_meta($post_id, 'user_id', $user_id);
-                update_post_meta($post_id, 'full_name', $full_name);
-                update_post_meta($post_id, 'phone', $phone);
-                update_post_meta($post_id, 'brokerage', $brokerage);
-                update_post_meta($post_id, 'website', $website);
-                update_post_meta($post_id, 'city', $city);
-                update_post_meta($post_id, 'dob', $dob);
-                update_post_meta($post_id, 'gender', $gender);
-                update_post_meta($post_id, 'designation', $designation);
-                if ($profile_picture) {
-                    update_post_meta($post_id, 'profile_picture', $profile_picture);
-                }
-                if ($agent_resume) {
-                    update_post_meta($post_id, 'agent_resume', $agent_resume);
-                }
-                $_SESSION['agent_form_msg'] = '<div class="alert alert-success"><p>Agent added successfully.</p></div>';
-            } else {
-                $_SESSION['agent_form_msg'] = '<div class="alert alert-danger"><p>Error creating agent post.</p></div>';
-            }
+            // Set the content type to HTML
+            add_filter('wp_mail_content_type', function () {
+                return 'text/html';
+            });
+
+            // Send the email
+            wp_mail($admin_email, $subject, $message);
+
+            // Remove the content type filter to avoid conflicts
+            remove_filter('wp_mail_content_type', function () {
+                return 'text/html';
+            });
+
+            $_SESSION['agent_form_msg'] = '<div class="alert alert-success"><p>Agent data stored successfully wait for admin approval.</p></div>';
         } else {
-            $_SESSION['agent_form_msg'] = '<div class="alert alert-danger"><p>Error: ' . $user_id->get_error_message() . '</p></div>';
+            $_SESSION['agent_form_msg'] = '<div class="alert alert-danger"><p>Error creating agent post.</p></div>';
         }
 
         wp_redirect($_SERVER['REQUEST_URI']);
         exit;
     }
+}
+add_action('admin_post_custom_agent_handle_form_submission', 'custom_agent_handle_form_submission');
+
+function custom_agent_email_exists_in_post_meta($email)
+{
+    global $wpdb;
+    $query = $wpdb->prepare("SELECT post_id FROM $wpdb->postmeta WHERE meta_key = 'user_email' AND meta_value = %s", $email);
+    $results = $wpdb->get_results($query);
+
+    return !empty($results);
 }
 
 
@@ -374,24 +432,28 @@ function custom_agent_handle_file_upload($file_key)
     }
 }
 
-// Display referred agents table
-function custom_agent_display_referred_agents_table()
+
+// Shortcode for the table
+add_shortcode('custom_approved_agent_table', 'custom_approved_agent_table_shortcode');
+function custom_approved_agent_table_shortcode()
 {
+    ob_start();
     $current_user_id = get_current_user_id();
     $args = array(
-        'meta_key' => 'referred_by',
+        'meta_key' => 'created_by',
         'meta_value' => $current_user_id,
+        'meta_compare' => '=',
         'role' => 'agent'
     );
     $user_query = new WP_User_Query($args);
 
     echo '
-        <div class="col-md-12">
-        <div class="card shadow-lg px-md-3">
-        <div class="card-header bg-white">
-        <h2>Referred agents list</h2>
-        </div>
-        <div class="card-body">
+    <div class="col-md-12">
+    <div class="card shadow-lg px-md-3">
+    <div class="card-header bg-white">
+    <h2>My Approved agents list</h2>
+    </div>
+    <div class="card-body">
         <div class="table-responsive">
         <table class="table table-hover table-stripped">
         <thead>
@@ -407,55 +469,132 @@ function custom_agent_display_referred_agents_table()
         <th id="gender" class="text-nowrap">Gender</th>
         <th id="designation" class="text-nowrap">Designation</th>
         <th id="profile_picture" class="text-nowrap">Profile Picture</th>
-                        <th id="agent_resume" class="text-nowrap">Agent Resume</th>
-                        </tr>
-                        </thead>
+        <th id="agent_resume" class="text-nowrap">Agent Resume</th>
+        </tr>
+        </thead>
                         <tbody>';
     if ($user_query->get_results()) {
         foreach ($user_query->get_results() as $user) {
             echo '<tr>
-                            <td class="text-nowrap">' . esc_html($user->user_login) . '</td>
-                            <td class="text-nowrap">' . esc_html($user->user_email) . '</td>
-                            <td class="text-nowrap">' . esc_html(get_user_meta($user->ID, 'full_name', true)) . '</td>
-                            <td class="text-nowrap">' . esc_html(get_user_meta($user->ID, 'phone', true)) . '</td>
-                            <td class="text-nowrap">' . esc_html(get_user_meta($user->ID, 'brokerage', true)) . '</td>
-                            <td class="text-nowrap">' . esc_html(get_user_meta($user->ID, 'website', true)) . '</td>
-                            <td class="text-nowrap">' . esc_html(get_user_meta($user->ID, 'city', true)) . '</td>
-                            <td class="text-nowrap">' . esc_html(get_user_meta($user->ID, 'dob', true)) . '</td>
-                            <td class="text-nowrap">' . esc_html(get_user_meta($user->ID, 'gender', true)) . '</td>
-                            <td class="text-nowrap">' . esc_html(get_user_meta($user->ID, 'designation', true)) . '</td>
-                            <td><img src="' . esc_url(get_user_meta($user->ID, 'profile_picture', true)) . '" width="50" height="50" /></td>
+                                <td class="text-nowrap">' . esc_html($user->user_login) . '</td>
+                                <td class="text-nowrap">' . esc_html($user->user_email) . '</td>
+                                <td class="text-nowrap">' . esc_html(get_user_meta($user->ID, 'full_name', true)) . '</td>
+                                <td class="text-nowrap">' . esc_html(get_user_meta($user->ID, 'phone', true)) . '</td>
+                                <td class="text-nowrap">' . esc_html(get_user_meta($user->ID, 'brokerage', true)) . '</td>
+                                <td class="text-nowrap">' . esc_html(get_user_meta($user->ID, 'website', true)) . '</td>
+                                <td class="text-nowrap">' . esc_html(get_user_meta($user->ID, 'city', true)) . '</td>
+                                <td class="text-nowrap">' . esc_html(get_user_meta($user->ID, 'dob', true)) . '</td>
+                                <td class="text-nowrap">' . esc_html(get_user_meta($user->ID, 'gender', true)) . '</td>
+                                <td class="text-nowrap">' . esc_html(get_user_meta($user->ID, 'designation', true)) . '</td>
+                                <td><img src="' . esc_url(get_user_meta($user->ID, 'profile_picture', true)) . '" width="50" height="50" /></td>
                             <td><a href="' . esc_url(get_user_meta($user->ID, 'agent_resume', true)) . '">Download</a></td>
                             </tr>';
         }
     } else {
         echo '<tr>
-        <td colspan="12">No Agents Found</td>
+        <td colspan="12">No Approved Agents Found</td>
         </tr>';
     }
     echo '</tbody></table></div></div></div></div>';
+    wp_reset_postdata();
+    return ob_get_clean();
 }
 
-// Add custom columns to users list
-function custom_agent_add_custom_user_columns($columns)
+// Display Unapproved agents table
+add_shortcode('custom_unapproved_agent_table', 'custom_unapproved_agent_table_shortcode');
+function custom_unapproved_agent_table_shortcode()
 {
-    $columns['full_name'] = __('Full Name');
-    $columns['phone'] = __('Phone');
-    $columns['brokerage'] = __('Brokerage');
-    $columns['website'] = __('Website');
-    $columns['city'] = __('City');
-    $columns['dob'] = __('Date of Birth');
-    $columns['gender'] = __('Gender');
-    $columns['designation'] = __('Designation');
-    $columns['agent_resume'] = __('Resume');
-    return $columns;
+    ob_start();
+    $current_user_id = get_current_user_id();
+    // Query for pending/rejected agents (custom post type)
+    $pending_rejected_args = array(
+        'post_type' => 'agent',
+        'post_status' => 'any',
+        'meta_query' => array(
+            'relation' => 'AND',
+            array(
+                'key' => 'created_by',
+                'value' => $current_user_id,
+                'compare' => '='
+            ),
+            array(
+                'key' => 'agent_status',
+                'value' => array('pending', 'rejected'),
+                'compare' => 'IN'
+            )
+        ),
+        'posts_per_page' => -1 // Ensure all posts are retrieved
+    );
+    $user_query = new WP_Query($pending_rejected_args);
+
+    echo '
+    <div class="col-md-12">
+    <div class="card shadow-lg px-md-3">
+    <div class="card-header bg-white">
+    <h2>My Pending or Rejected Agents List</h2>
+    </div>
+    <div class="card-body">
+        <div class="table-responsive">
+        <table class="table table-hover table-stripped">
+        <thead>
+        <tr>
+        <th id="full_name" class="text-nowrap">Full Name</th>
+        <th id="email" class="text-nowrap">Email</th>
+        <th id="phone" class="text-nowrap">Phone</th>
+        <th id="brokerage" class="text-nowrap">Brokerage</th>
+        <th id="website" class="text-nowrap">Website</th>
+        <th id="city" class="text-nowrap">City</th>
+        <th id="dob" class="text-nowrap">Date of Birth</th>
+        <th id="gender" class="text-nowrap">Gender</th>
+        <th id="designation" class="text-nowrap">Designation</th>
+        <th id="profile_picture" class="text-nowrap">Profile Picture</th>
+        <th id="agent_resume" class="text-nowrap">Agent Resume</th>
+        <th id="status" class="text-nowrap">Status</th>
+        </tr>
+        </thead>
+        <tbody>';
+
+    if ($user_query->have_posts()) {
+        while ($user_query->have_posts()) {
+            $user_query->the_post();
+            $post_id = get_the_ID();
+            $status = get_post_meta($post_id, 'agent_status', true);
+
+            echo '<tr>
+                    <td class="text-nowrap">' . esc_html(get_post_meta($post_id, 'full_name', true)) . '</td>
+                    <td class="text-nowrap">' . esc_html(get_post_meta($post_id, 'user_email', true)) . '</td>
+                    <td class="text-nowrap">' . esc_html(get_post_meta($post_id, 'phone', true)) . '</td>
+                    <td class="text-nowrap">' . esc_html(get_post_meta($post_id, 'brokerage', true)) . '</td>
+                    <td class="text-nowrap">' . esc_html(get_post_meta($post_id, 'website', true)) . '</td>
+                    <td class="text-nowrap">' . esc_html(get_post_meta($post_id, 'city', true)) . '</td>
+                    <td class="text-nowrap">' . esc_html(get_post_meta($post_id, 'dob', true)) . '</td>
+                    <td class="text-nowrap">' . esc_html(get_post_meta($post_id, 'gender', true)) . '</td>
+                    <td class="text-nowrap">' . esc_html(get_post_meta($post_id, 'designation', true)) . '</td>
+                    <td class="text-nowrap"><img src="' . esc_url(get_post_meta($post_id, 'profile_picture', true)) . '" width="50" height="50" /></td>
+                    <td class="text-nowrap"><a href="' . esc_url(get_post_meta($post_id, 'agent_resume', true)) . '">Download</a></td>
+                    <td class="text-nowrap">' . esc_html(ucfirst($status)) . '</td>
+                </tr>';
+        }
+    } else {
+        echo '<tr>
+                <td colspan="12">No Pending or Rejected Agents Found</td>
+              </tr>';
+    }
+
+    wp_reset_postdata();
+
+    echo '</tbody></table></div></div></div></div>';
+
+    return ob_get_clean();
 }
-add_filter('manage_users_columns', 'custom_agent_add_custom_user_columns');
+
 
 // Add custom columns to the "agent" post type
 function custom_agent_add_custom_columns($columns)
 {
     $columns['full_name'] = 'Full Name';
+    $columns['user_email'] = 'Email';
+    $columns['created_by'] = 'Created By';
     $columns['phone'] = 'Phone';
     $columns['brokerage'] = 'Brokerage';
     $columns['website'] = 'Website';
@@ -473,10 +612,17 @@ add_filter('manage_agent_posts_columns', 'custom_agent_add_custom_columns');
 // Populate custom columns with data
 function custom_agent_show_custom_columns_data($column, $post_id)
 {
-
     switch ($column) {
         case 'full_name':
             echo esc_html(get_post_meta($post_id, 'full_name', true));
+            break;
+        case 'user_email':
+            echo esc_html(get_post_meta($post_id, 'user_email', true));
+            break;
+        case 'created_by':
+            $created_by_user_id = get_post_meta($post_id, 'created_by', true);
+            $created_by_user = get_userdata($created_by_user_id);
+            echo $created_by_user->user_email;
             break;
         case 'phone':
             echo esc_html(get_post_meta($post_id, 'phone', true));
@@ -514,56 +660,188 @@ function custom_agent_show_custom_columns_data($column, $post_id)
                     echo 'No user found';
                 }
             } else {
-                echo 'No user ID';
+                echo 'N/A';
             }
             break;
         case 'agent_status':
             $current_status = get_post_meta($post_id, 'agent_status', true);
-            ?>
-            <form method="post" action="<?php echo admin_url('admin-post.php'); ?>">
-                <input type="hidden" name="action" value="update_agent_status">
-                <input type="hidden" name="post_id" value="<?php echo esc_attr($post_id); ?>">
-                <input type="hidden" name="nonce" value="<?php echo wp_create_nonce('custom_agent_nonce'); ?>">
-                <select name="new_status">
-                    <option value="pending" <?php selected($current_status, 'pending'); ?>>Pending</option>
+            if ($current_status != 'approved') {
+                ?>
+                <select class="agent-status-select" data-post-id="<?php echo esc_attr($post_id); ?>"
+                    data-nonce="<?php echo wp_create_nonce('custom_agent_nonce'); ?>">
+                    <?php if ($current_status != 'approved') { ?>
+                        <option value="pending" <?php selected($current_status, 'pending'); ?>>Pending</option>
+                    <?php } ?>
                     <option value="approved" <?php selected($current_status, 'approved'); ?>>Approved</option>
                     <option value="rejected" <?php selected($current_status, 'rejected'); ?>>Rejected</option>
                 </select>
-                <button type="submit">Update</button>
-            </form>
-            <?php
+            <?php } else {
+                echo "Approved";
+            }
             break;
     }
 }
 add_action('manage_agent_posts_custom_column', 'custom_agent_show_custom_columns_data', 10, 2);
 
+function enqueue_custom_admin_scripts($hook)
+{
+    if ('edit.php' !== $hook || 'agent' !== get_post_type()) {
+        return;
+    }
+
+    wp_enqueue_script('custom-agent-admin', plugin_dir_url(__FILE__) . 'custom-agent-admin.js', array('jquery'), null, true);
+    wp_localize_script(
+        'custom-agent-admin',
+        'customAgentAdmin',
+        array(
+            'ajax_url' => admin_url('admin-ajax.php'),
+            'nonce' => wp_create_nonce('custom_agent_nonce')
+        )
+    );
+}
+add_action('admin_enqueue_scripts', 'enqueue_custom_admin_scripts');
+
 function handle_update_agent_status()
 {
-    check_admin_referer('custom_agent_nonce', 'nonce');
+    check_ajax_referer('custom_agent_nonce', 'nonce');
 
     if (!current_user_can('edit_post', $_POST['post_id'])) {
-        wp_die('You do not have permission to edit this post.');
+        wp_send_json_error('You do not have permission to edit this post.');
     }
 
     $post_id = intval($_POST['post_id']);
     $new_status = sanitize_text_field($_POST['new_status']);
 
     update_post_meta($post_id, 'agent_status', $new_status);
+    $full_name = get_post_meta($post_id, 'full_name', true);
 
     if ($new_status == 'approved') {
-        // Create a new user from post details
-        $user_id = create_user_from_post($post_id);
+        // Retrieve post meta data
+        $user_login = get_post_meta($post_id, 'user_login', true);
+        $user_email = get_post_meta($post_id, 'user_email', true);
+        $created_by = get_post_meta($post_id, 'created_by', true);
+        $phone = get_post_meta($post_id, 'phone', true);
+        $brokerage = get_post_meta($post_id, 'brokerage', true);
+        $website = get_post_meta($post_id, 'website', true);
+        $city = get_post_meta($post_id, 'city', true);
+        $dob = get_post_meta($post_id, 'dob', true);
+        $gender = get_post_meta($post_id, 'gender', true);
+        $designation = get_post_meta($post_id, 'designation', true);
+        $profile_picture = get_post_meta($post_id, 'profile_picture', true);
+        $agent_resume = get_post_meta($post_id, 'agent_resume', true);
 
-        if ($user_id) {
-            // Send reset password email to the new user
+        // Generate a unique username
+        $user_login = sanitize_user($user_login);
+        $user_email = sanitize_email($user_email);
+
+        // Create user
+        $user_password = wp_generate_password();
+        $user_id = wp_create_user($user_login, $user_password, $user_email);
+
+        if (!is_wp_error($user_id)) {
+
+            // Update user role and meta
+            wp_update_user(array('ID' => $user_id, 'role' => 'agent'));
+            update_user_meta($user_id, 'full_name', $full_name);
+            update_user_meta($user_id, 'created_by', $created_by);
+            update_user_meta($user_id, 'phone', $phone);
+            update_user_meta($user_id, 'brokerage', $brokerage);
+            update_user_meta($user_id, 'website', $website);
+            update_user_meta($user_id, 'city', $city);
+            update_user_meta($user_id, 'dob', $dob);
+            update_user_meta($user_id, 'gender', $gender);
+            update_user_meta($user_id, 'designation', $designation);
+            update_user_meta($user_id, 'profile_picture', $profile_picture);
+            update_user_meta($user_id, 'agent_resume', $agent_resume);
+
+            // Send reset password email
             send_reset_password_email($user_id);
+
+            // Update the post meta to link to the new user
+            update_post_meta($post_id, 'user_id', $user_id);
+
+            wp_send_json_success();
+        } else {
+            wp_send_json_error('User creation failed: ' . $user_id->get_error_message());
         }
+    } elseif ($new_status == 'rejected') {
+        // Get the created_by user ID from the post meta
+        $created_by_user_id = get_post_meta($post_id, 'created_by', true);
+        $created_by_user = get_userdata($created_by_user_id);
+
+        if ($created_by_user) {
+            $created_by_email = $created_by_user->user_email;
+
+            // Send rejection email
+            $subject = __('Agent Referral Rejected');
+            $message = '<html><body>';
+            $message .= '<p>' . __('Hello,') . '</p>';
+            $message .= '<p>' . __('We regret to inform you that the agent you referred has been rejected by the admin.') . '</p>';
+            $message .= '<p>' . __('Agent Name: ') . esc_html($full_name) . '</p>';
+            $message .= '<p>' . __('If you have any questions, please contact us.') . '</p>';
+            $message .= '<p>' . __('Thank you,') . '</p>';
+            $message .= '<p>' . __('The Admin Team') . '</p>';
+            $message .= '</body></html>';
+
+            // Set the content type to HTML
+            add_filter('wp_mail_content_type', function () {
+                return 'text/html';
+            });
+
+            // Send the email
+            wp_mail($created_by_email, $subject, $message);
+
+            // Remove the content type filter to avoid conflicts
+            remove_filter('wp_mail_content_type', function () {
+                return 'text/html';
+            });
+
+            wp_send_json_success('Rejection email sent to the referrer.');
+        } else {
+            error_log("Status is not approved, no user created.");
+            wp_send_json_success();
+        }
+
+    }
+}
+add_action('wp_ajax_update_agent_status', 'handle_update_agent_status');
+
+function send_reset_password_email($user_id)
+{
+    $user = get_userdata($user_id);
+    $reset_key = get_password_reset_key($user);
+
+    if (is_wp_error($reset_key)) {
+        return false;
     }
 
-    wp_redirect(add_query_arg('updated', 'true', wp_get_referer()));
-    exit;
+    $reset_url = network_site_url("wp-login.php?action=rp&key=$reset_key&login=" . rawurlencode($user->user_login), 'login');
+
+    $message = '<html><body>';
+    $message .= '<p>' . __('Welcome') . '</p>';
+    $message .= '<p>' . __('Your agent account is approved by admin:') . '</p>';
+    $message .= '<p>' . __('You can set your password now:') . '</p>';
+    $message .= '<p>' . sprintf(__('Username: %s'), $user->user_login) . '</p>';
+    $message .= '<p>' . __('If this was a mistake, just ignore this email and nothing will happen.') . '</p>';
+    $message .= '<p>' . __('To reset your password, visit the following address:') . '</p>';
+    $message .= '<p><a href="' . esc_url($reset_url) . '" style="display: inline-block; padding: 10px 20px; font-size: 16px; color: #ffffff; background-color: #0073aa; text-decoration: none; border-radius: 5px;">' . __('Reset Password') . '</a></p>';
+    $message .= '</body></html>';
+
+    // Set the content type to HTML
+    add_filter('wp_mail_content_type', function () {
+        return 'text/html';
+    });
+
+    // Send the email
+    wp_mail($user->user_email, __('Password Reset'), $message);
+
+    // Remove the content type filter to avoid conflicts
+    remove_filter('wp_mail_content_type', function () {
+        return 'text/html';
+    });
 }
-add_action('admin_post_update_agent_status', 'handle_update_agent_status');
+
+
 
 
 function create_user_from_post($post_id)
@@ -593,29 +871,24 @@ function create_user_from_post($post_id)
     return $user_id;
 }
 
-function send_reset_password_email($user_id)
+
+// Add custom columns to users list
+
+function custom_agent_add_custom_user_columns($columns)
 {
-    $user = get_userdata($user_id);
-    $reset_key = get_password_reset_key($user);
-
-    if (is_wp_error($reset_key)) {
-        return false;
-    }
-
-    $reset_url = network_site_url("wp-login.php?action=rp&key=$reset_key&login=" . rawurlencode($user->user_login), 'login');
-
-    $message = __('Someone has requested a password reset for the following account:') . "\r\n\r\n";
-    $message .= network_site_url() . "\r\n\r\n";
-    $message .= sprintf(__('Username: %s'), $user->user_login) . "\r\n\r\n";
-    $message .= __('If this was a mistake, just ignore this email and nothing will happen.') . "\r\n\r\n";
-    $message .= __('To reset your password, visit the following address:') . "\r\n\r\n";
-    $message .= '<a href="' . esc_url($reset_url) . '">' . esc_url($reset_url) . '</a>' . "\r\n";
-
-    wp_mail($user->user_email, __('Password Reset'), $message);
+    $columns['full_name'] = __('Full Name');
+    $columns['created_by'] = __('Created By');
+    $columns['phone'] = __('Phone');
+    $columns['brokerage'] = __('Brokerage');
+    $columns['website'] = __('Website');
+    $columns['city'] = __('City');
+    $columns['dob'] = __('Date of Birth');
+    $columns['gender'] = __('Gender');
+    $columns['designation'] = __('Designation');
+    $columns['agent_resume'] = __('Resume');
+    return $columns;
 }
-
-
-
+add_filter('manage_users_columns', 'custom_agent_add_custom_user_columns');
 
 // Populate custom columns with data
 function custom_agent_show_custom_user_columns_data($value, $column_name, $user_id)
@@ -623,12 +896,21 @@ function custom_agent_show_custom_user_columns_data($value, $column_name, $user_
     switch ($column_name) {
         case 'full_name':
             return get_user_meta($user_id, 'full_name', true);
+        case 'created_by':
+            $created_by_user_id = get_user_meta($user_id, 'created_by', true);
+            if ($created_by_user_id) {
+                $created_by_user = get_userdata($created_by_user_id);
+                return $created_by_user ? esc_html($created_by_user->user_email) : 'User not found';
+            } else {
+                return 'No creator ID';
+            }
         case 'phone':
             return get_user_meta($user_id, 'phone', true);
         case 'brokerage':
             return get_user_meta($user_id, 'brokerage', true);
         case 'website':
-            return get_user_meta($user_id, 'website', true);
+            $website = get_user_meta($user_id, 'website', true);
+            return $website ? '<a href="' . esc_url($website) . '" target="_blank">' . esc_html($website) . '</a>' : '';
         case 'city':
             return get_user_meta($user_id, 'city', true);
         case 'dob':
@@ -640,12 +922,12 @@ function custom_agent_show_custom_user_columns_data($value, $column_name, $user_
         case 'agent_resume':
             $resume_url = get_user_meta($user_id, 'agent_resume', true);
             return $resume_url ? '<a href="' . esc_url($resume_url) . '" target="_blank">View Resume</a>' : '';
-
         default:
             return $value;
     }
 }
 add_action('manage_users_custom_column', 'custom_agent_show_custom_user_columns_data', 10, 3);
+
 function custom_agent_post_type()
 {
     $labels = array(
