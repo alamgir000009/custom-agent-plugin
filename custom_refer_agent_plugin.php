@@ -70,9 +70,17 @@ function custom_agent_custom_avatar($avatar, $id_or_email, $size, $default, $alt
     }
 
     if ($user && is_object($user)) {
+
         $profile_picture = get_user_meta($user->ID, 'profile_picture', true);
         if ($profile_picture) {
-            $avatar = '<img src="' . esc_url($profile_picture) . '" alt="' . esc_attr($alt) . '" width="' . (int) $size . '" height="' . (int) $size . '" />';
+            if (is_numeric($profile_picture)) {
+                $profile_picture_url = wp_get_attachment_url($profile_picture);
+            } else {
+                $profile_picture_url = $profile_picture;
+            }
+            if ($profile_picture_url) {
+                $avatar = '<img src="' . esc_url($profile_picture_url) . '" alt="' . esc_attr($alt) . '" width="' . (int) $size . '" height="' . (int) $size . '" />';
+            }
         }
     }
 
@@ -204,24 +212,26 @@ function custom_agent_form_shortcode()
                         </div>
                         <div class="form-group col-md-6 mt-3">
                             <label class="form-label" for="phone">Phone</label>
-                            <input placeholder="Enter Phone" type="text" name="phone" id="phone" class="form-control">
+                            <input placeholder="Enter Phone" type="text" name="phone" id="phone" class="form-control"
+                                required>
                         </div>
                         <div class="form-group col-md-6 mt-3">
                             <label class="form-label" for="brokerage">Brokerage</label>
                             <input placeholder="Enter Brokerage" type="text" name="brokerage" id="brokerage"
-                                class="form-control">
+                                class="form-control" required>
                         </div>
                         <div class="form-group col-md-6 mt-3">
                             <label class="form-label" for="website">Website</label>
-                            <input placeholder="Enter Website" type="url" name="website" id="website" class="form-control">
+                            <input placeholder="Enter Website" type="url" name="website" id="website" class="form-control"
+                                required>
                         </div>
                         <div class="form-group col-md-6 mt-3">
                             <label class="form-label" for="city">City</label>
-                            <input placeholder="Enter City" type="text" name="city" id="city" class="form-control">
+                            <input placeholder="Enter City" type="text" name="city" id="city" class="form-control" required>
                         </div>
                         <div class="form-group col-md-6 mt-3">
                             <label class="form-label" for="dob">Date of Birth</label>
-                            <input type="date" name="dob" id="dob" class="form-control">
+                            <input type="date" name="dob" id="dob" class="form-control" required>
                         </div>
                         <div class="form-group col-md-6 mt-3">
                             <label class="form-label" for="gender">Gender</label>
@@ -475,6 +485,22 @@ function custom_approved_agent_table_shortcode()
                         <tbody>';
     if ($user_query->get_results()) {
         foreach ($user_query->get_results() as $user) {
+
+            $profile_picture_meta = get_user_meta($user->ID, 'profile_picture', true);
+            if (is_numeric($profile_picture_meta)) {
+                $profile_picture_id = intval($profile_picture_meta);
+                $profile_picture_url = wp_get_attachment_url($profile_picture_id);
+            } else {
+                $profile_picture_url = esc_url($profile_picture_meta);
+            }
+
+            $agent_resume_meta = get_user_meta($user->ID, 'agent_resume', true);
+            if (is_numeric($agent_resume_meta)) {
+                $agent_resume_id = intval($agent_resume_meta);
+                $agent_resume_url = wp_get_attachment_url($agent_resume_id);
+            } else {
+                $agent_resume_url = esc_url($agent_resume_meta);
+            }
             echo '<tr>
                                 <td class="text-nowrap">' . esc_html($user->user_login) . '</td>
                                 <td class="text-nowrap">' . esc_html($user->user_email) . '</td>
@@ -486,9 +512,9 @@ function custom_approved_agent_table_shortcode()
                                 <td class="text-nowrap">' . esc_html(get_user_meta($user->ID, 'dob', true)) . '</td>
                                 <td class="text-nowrap">' . esc_html(get_user_meta($user->ID, 'gender', true)) . '</td>
                                 <td class="text-nowrap">' . esc_html(get_user_meta($user->ID, 'designation', true)) . '</td>
-                                <td><img src="' . esc_url(get_user_meta($user->ID, 'profile_picture', true)) . '" width="50" height="50" /></td>
-                            <td><a href="' . esc_url(get_user_meta($user->ID, 'agent_resume', true)) . '">Download</a></td>
-                            </tr>';
+                                <td><img src="' . esc_url($profile_picture_url) . '" width="50" height="50" /></td>
+            <td>' . ($agent_resume_url ? '<a href="' . esc_url($agent_resume_url) . '">Download</a>' : 'No resume available') . '</td>
+          </tr>';
         }
     } else {
         echo '<tr>
@@ -701,6 +727,7 @@ function enqueue_custom_admin_scripts($hook)
 }
 add_action('admin_enqueue_scripts', 'enqueue_custom_admin_scripts');
 
+
 function handle_update_agent_status()
 {
     check_ajax_referer('custom_agent_nonce', 'nonce');
@@ -727,8 +754,8 @@ function handle_update_agent_status()
         $dob = get_post_meta($post_id, 'dob', true);
         $gender = get_post_meta($post_id, 'gender', true);
         $designation = get_post_meta($post_id, 'designation', true);
-        $profile_picture = get_post_meta($post_id, 'profile_picture', true);
         $agent_resume = get_post_meta($post_id, 'agent_resume', true);
+        $profile_picture = get_post_meta($post_id, 'profile_picture', true);
 
         // Generate a unique username
         $user_login = sanitize_user($user_login);
@@ -751,8 +778,54 @@ function handle_update_agent_status()
             update_user_meta($user_id, 'dob', $dob);
             update_user_meta($user_id, 'gender', $gender);
             update_user_meta($user_id, 'designation', $designation);
-            update_user_meta($user_id, 'profile_picture', $profile_picture);
-            update_user_meta($user_id, 'agent_resume', $agent_resume);
+
+            if ($profile_picture || $agent_resume) {
+
+                require_once (ABSPATH . 'wp-admin/includes/file.php');
+                require_once (ABSPATH . 'wp-admin/includes/media.php');
+                require_once (ABSPATH . 'wp-admin/includes/image.php');
+
+
+                if ($profile_picture) {
+
+                    $tmp = download_url($profile_picture);
+
+                    if (!is_wp_error($tmp)) {
+                        $file_array = array(
+                            'name' => basename($profile_picture),
+                            'tmp_name' => $tmp,
+                        );
+
+                        $attachment_id = media_handle_sideload($file_array, 0);
+
+                        if (is_wp_error($attachment_id)) {
+                            @unlink($file_array['tmp_name']);
+                        } else {
+                            update_user_meta($user_id, 'profile_picture', $attachment_id);
+                        }
+                    }
+                }
+
+                if ($agent_resume) {
+
+                    $tmp = download_url($agent_resume);
+
+                    if (!is_wp_error($tmp)) {
+                        $file_array = array(
+                            'name' => basename($agent_resume),
+                            'tmp_name' => $tmp,
+                        );
+
+                        $attachment_id = media_handle_sideload($file_array, 0);
+
+                        if (is_wp_error($attachment_id)) {
+                            @unlink($file_array['tmp_name']);
+                        } else {
+                            update_user_meta($user_id, 'agent_resume', $attachment_id);
+                        }
+                    }
+                }
+            }
 
             // Send reset password email
             send_reset_password_email($user_id);
@@ -804,6 +877,7 @@ function handle_update_agent_status()
 
     }
 }
+
 add_action('wp_ajax_update_agent_status', 'handle_update_agent_status');
 
 function send_reset_password_email($user_id)
@@ -920,8 +994,18 @@ function custom_agent_show_custom_user_columns_data($value, $column_name, $user_
         case 'designation':
             return get_user_meta($user_id, 'designation', true);
         case 'agent_resume':
-            $resume_url = get_user_meta($user_id, 'agent_resume', true);
-            return $resume_url ? '<a href="' . esc_url($resume_url) . '" target="_blank">View Resume</a>' : '';
+            $resume_meta = get_user_meta($user_id, 'agent_resume', true);
+            if (is_numeric($resume_meta)) {
+                $resume_attachment_id = intval($resume_meta);
+                $resume_url = wp_get_attachment_url($resume_attachment_id);
+            } else {
+                $resume_url = esc_url($resume_meta);
+            }
+            if ($resume_url) {
+                return '<a href="' . esc_url($resume_url) . '" target="_blank">View Resume</a>';
+            }
+
+            return '';
         default:
             return $value;
     }
